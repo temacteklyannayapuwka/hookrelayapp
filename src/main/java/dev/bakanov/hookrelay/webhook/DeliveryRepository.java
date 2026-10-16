@@ -1,6 +1,8 @@
 package dev.bakanov.hookrelay.webhook;
 
 import java.net.URI;
+import java.sql.Timestamp;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -12,6 +14,23 @@ public class DeliveryRepository {
 
     public DeliveryRepository(JdbcClient jdbcClient) {
         this.jdbcClient = jdbcClient;
+    }
+
+    public Optional<DeliveryDetails> findById(UUID id) {
+        return jdbcClient.sql("""
+                SELECT id, event, status, http_status, error_message, created_at, completed_at
+                FROM deliveries WHERE id = :id
+                """)
+                .param("id", id)
+                .query((result, rowNumber) -> {
+                    Timestamp completedAt = result.getTimestamp("completed_at");
+                    return new DeliveryDetails(result.getObject("id", UUID.class),
+                            result.getString("event"), result.getString("status"),
+                            result.getObject("http_status", Integer.class), result.getString("error_message"),
+                            result.getTimestamp("created_at").toInstant(),
+                            completedAt == null ? null : completedAt.toInstant());
+                })
+                .optional();
     }
 
     public UUID create(WebhookRequest request, URI targetUrl) {

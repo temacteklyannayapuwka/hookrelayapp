@@ -1,7 +1,10 @@
 package dev.bakanov.hookrelay.webhook;
 
 import jakarta.validation.Valid;
+import java.util.UUID;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -15,6 +18,11 @@ public class WebhookController {
 
     public WebhookController(WebhookDeliveryService deliveryService) {
         this.deliveryService = deliveryService;
+    }
+
+    @GetMapping("/{id}")
+    public DeliveryDetails findById(@PathVariable UUID id) {
+        return deliveryService.findById(id);
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)

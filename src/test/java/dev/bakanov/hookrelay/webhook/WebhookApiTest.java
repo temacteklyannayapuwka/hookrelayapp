@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -95,6 +97,19 @@ class WebhookApiTest {
         assertThat(saved.get("created_at")).isNotNull();
         assertThat(saved.get("completed_at")).isNotNull();
         assertThat(saved.get("error_message")).isNull();
+
+        ResponseEntity<JsonNode> details = client.getForEntity("/api/webhooks/" + id, JsonNode.class);
+        assertThat(details.getStatusCode().value()).isEqualTo(200);
+        assertThat(details.getBody().get("deliveryId").asText()).isEqualTo(id.toString());
+        assertThat(details.getBody().get("event").asText()).isEqualTo("order.created");
+        assertThat(details.getBody().get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(details.getBody().get("httpStatus").asInt()).isEqualTo(204);
+        assertThat(details.getBody().get("errorMessage").isNull()).isTrue();
+        assertThat(Instant.parse(details.getBody().get("createdAt").asText()))
+                .isEqualTo(((java.sql.Timestamp) saved.get("created_at")).toInstant());
+        assertThat(Instant.parse(details.getBody().get("completedAt").asText()))
+                .isEqualTo(((java.sql.Timestamp) saved.get("completed_at")).toInstant());
+        assertThat(deliveries.get()).isEqualTo(1);
     }
 
     @Test
@@ -109,6 +124,51 @@ class WebhookApiTest {
         assertThat(saved.get("http_status")).isEqualTo(500);
         assertThat(saved.get("error_message")).isEqualTo("Webhook recipient returned HTTP 500");
         assertThat(saved.get("completed_at")).isNotNull();
+
+        ResponseEntity<JsonNode> details = client.getForEntity("/api/webhooks/" + saved.get("id"),
+                JsonNode.class);
+        assertThat(details.getStatusCode().value()).isEqualTo(200);
+        assertThat(details.getBody().get("status").asText()).isEqualTo("FAILED");
+        assertThat(details.getBody().get("httpStatus").asInt()).isEqualTo(500);
+        assertThat(details.getBody().get("errorMessage").asText())
+                .isEqualTo("Webhook recipient returned HTTP 500");
+        assertThat(deliveries.get()).isEqualTo(1);
+    }
+
+    @Test
+    void returnsPendingDeliveryWithoutSendingIt() {
+        UUID id = new DeliveryRepository(jdbcClient).create(
+                new WebhookRequest("order.created", objectMapper.createObjectNode()),
+                URI.create("http://localhost:9000/webhook"));
+
+        ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/" + id, JsonNode.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        assertThat(response.getBody().get("status").asText()).isEqualTo("PENDING");
+        assertThat(response.getBody().get("httpStatus").isNull()).isTrue();
+        assertThat(response.getBody().get("errorMessage").isNull()).isTrue();
+        assertThat(response.getBody().get("completedAt").isNull()).isTrue();
+        assertThat(response.getBody().get("createdAt").asText()).isNotBlank();
+        assertThat(deliveries.get()).isZero();
+        assertThat(jdbcClient.sql("SELECT status FROM deliveries WHERE id = :id").param("id", id)
+                .query(String.class).single()).isEqualTo("PENDING");
+    }
+
+    @Test
+    void returnsNotFoundForUnknownDelivery() {
+        ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/" + UUID.randomUUID(),
+                JsonNode.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        assertThat(deliveries.get()).isZero();
+    }
+
+    @Test
+    void rejectsMalformedDeliveryId() {
+        ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/not-a-uuid", JsonNode.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(deliveries.get()).isZero();
     }
 
     @Test

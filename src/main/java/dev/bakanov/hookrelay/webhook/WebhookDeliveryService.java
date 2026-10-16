@@ -38,6 +38,11 @@ public class WebhookDeliveryService {
         this.restClient = builder.requestFactory(factory).build();
     }
 
+    public DeliveryDetails findById(UUID id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Delivery not found"));
+    }
+
     public DeliveryResponse deliver(WebhookRequest request) {
         UUID id = repository.create(request, targetUrl);
         int httpStatus;
