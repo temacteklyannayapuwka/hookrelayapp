@@ -6,6 +6,7 @@ import java.net.ServerSocket;
 import java.net.URI;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -21,19 +22,28 @@ class WebhookDeliveryServiceTest {
             closedPort = socket.getLocalPort();
         }
         WebhookDeliveryService service = new WebhookDeliveryService(RestClient.builder(),
-                URI.create("http://127.0.0.1:" + closedPort + "/webhook"));
-        WebhookRequest request = new WebhookRequest("order.created",
+                URI.create("http://127.0.0.1:" + closedPort + "/webhook"),
+                new DeliveryRepository(JdbcClient.create(TestDatabase.dataSource())));
+        String event = "connection.failure." + java.util.UUID.randomUUID();
+        WebhookRequest request = new WebhookRequest(event,
                 new ObjectMapper().createObjectNode());
 
         assertThatThrownBy(() -> service.deliver(request))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY));
+        var saved = JdbcClient.create(TestDatabase.dataSource())
+                .sql("SELECT * FROM deliveries WHERE event = :event").param("event", event)
+                .query().singleRow();
+        assertThat(saved.get("status")).isEqualTo("FAILED");
+        assertThat(saved.get("http_status")).isNull();
+        assertThat(saved.get("error_message")).isEqualTo("Webhook recipient is unavailable");
+        assertThat(saved.get("completed_at")).isNotNull();
     }
 
     @Test
     void rejectsNonHttpTarget() {
         assertThatThrownBy(() -> new WebhookDeliveryService(RestClient.builder(),
-                URI.create("file:///tmp/webhook")))
+                URI.create("file:///tmp/webhook"), null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

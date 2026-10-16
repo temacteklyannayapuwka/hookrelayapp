@@ -9,11 +9,42 @@ Backend-сервис для доставки вебхуков.
 - Приём события через `POST /api/webhooks` и одна попытка доставки JSON получателю.
 - Проверка обязательных полей, таймаут подключения 3 секунды и ожидания ответа 5 секунд.
 - Ответ `400` при некорректном запросе, `502` при сбое доставки или ответе получателя не из диапазона `2xx`.
-- Перенаправления не выполняются. События не сохраняются, повторных попыток нет.
+- Сохранение событий, адреса получателя, статуса, HTTP-кода, ошибки и времени доставки в PostgreSQL.
+- Статусы: `PENDING`, `SUCCESS`, `FAILED`. Успешный ответ содержит `deliveryId`.
+- Автоматическое создание схемы через миграции Flyway.
+- Перенаправления не выполняются, повторных попыток нет.
 
 ## Запуск
 
-Требуются JDK 17+ и Maven 3.6.3+.
+Требуются JDK 17+, Maven 3.6.3+ и PostgreSQL 14+.
+
+В PostgreSQL создайте отдельного пользователя и базу от имени администратора.
+Замените пример пароля своим локальным паролем:
+
+```sql
+CREATE USER hookrelay WITH PASSWORD 'replace-with-local-password';
+CREATE DATABASE hookrelay OWNER hookrelay;
+```
+
+Перед запуском задайте подключение. Linux/macOS:
+
+```bash
+export DB_URL=jdbc:postgresql://localhost:5432/hookrelay
+export DB_USER=hookrelay
+export DB_PASSWORD='replace-with-local-password'
+```
+
+PowerShell:
+
+```powershell
+$env:DB_URL="jdbc:postgresql://localhost:5432/hookrelay"
+$env:DB_USER="hookrelay"
+$env:DB_PASSWORD="replace-with-local-password"
+```
+
+`DB_PASSWORD` обязателен. Значения `DB_URL` и `DB_USER` по умолчанию соответствуют примеру.
+При запуске Flyway применяет миграции к выбранной БД; используйте только отдельную базу этого приложения.
+Без подключения к БД приложение не запускается и события не отправляются.
 
 ```bash
 mvn spring-boot:run
@@ -46,16 +77,19 @@ curl -X POST http://localhost:8080/api/webhooks \
 Получателю отправляется тот же JSON. Если он ответил `204`, API вернёт HTTP `200`:
 
 ```json
-{"delivered":true,"httpStatus":204}
+{"deliveryId":"e071bdd1-f16b-4226-af51-1a24a98161e6","delivered":true,"httpStatus":204}
 ```
 
 API не имеет аутентификации; запускать его следует в доверенной локальной среде.
 
-Запуск тестов:
+Запуск тестов (JDK и Maven, отдельная установленная БД не нужна):
 
 ```bash
 mvn test
 ```
+
+Тесты автоматически поднимают временный PostgreSQL. На Linux запускайте их от обычного пользователя, не от `root`.
+При первом запуске Maven скачивает бинарные файлы тестового PostgreSQL.
 
 Проверка состояния:
 

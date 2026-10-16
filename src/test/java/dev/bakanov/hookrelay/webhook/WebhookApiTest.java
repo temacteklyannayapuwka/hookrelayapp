@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterAll;
@@ -18,6 +19,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -39,14 +41,21 @@ class WebhookApiTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private JdbcClient jdbcClient;
+
     @DynamicPropertySource
     static void configureTarget(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", TestDatabase::url);
+        registry.add("spring.datasource.username", () -> "postgres");
+        registry.add("spring.datasource.password", () -> "");
         registry.add("hookrelay.delivery.target-url",
                 () -> "http://127.0.0.1:" + recipient.getAddress().getPort() + "/webhook");
     }
 
     @BeforeEach
     void resetRecipient() {
+        jdbcClient.sql("DELETE FROM deliveries").update();
         responseStatus.set(204);
         deliveries.set(0);
         receivedBody.set(null);
@@ -75,6 +84,17 @@ class WebhookApiTest {
         assertThat(receivedContentType.get()).isEqualTo("application/json");
         assertThat(objectMapper.readTree(receivedBody.get()))
                 .isEqualTo(objectMapper.readTree(request));
+        UUID id = UUID.fromString(response.getBody().get("deliveryId").asText());
+        var saved = jdbcClient.sql("SELECT *, payload::text AS payload_json FROM deliveries WHERE id = :id")
+                .param("id", id).query().singleRow();
+        assertThat(saved.get("event")).isEqualTo("order.created");
+        assertThat(objectMapper.readTree((String) saved.get("payload_json")))
+                .isEqualTo(objectMapper.readTree("{\"orderId\":42}"));
+        assertThat(saved.get("status")).isEqualTo("SUCCESS");
+        assertThat(saved.get("http_status")).isEqualTo(204);
+        assertThat(saved.get("created_at")).isNotNull();
+        assertThat(saved.get("completed_at")).isNotNull();
+        assertThat(saved.get("error_message")).isNull();
     }
 
     @Test
@@ -84,6 +104,11 @@ class WebhookApiTest {
         assertThat(post("{\"event\":\"order.created\",\"payload\":{}}")
                 .getStatusCode().value()).isEqualTo(502);
         assertThat(deliveries.get()).isEqualTo(1);
+        var saved = jdbcClient.sql("SELECT * FROM deliveries").query().singleRow();
+        assertThat(saved.get("status")).isEqualTo("FAILED");
+        assertThat(saved.get("http_status")).isEqualTo(500);
+        assertThat(saved.get("error_message")).isEqualTo("Webhook recipient returned HTTP 500");
+        assertThat(saved.get("completed_at")).isNotNull();
     }
 
     @Test
@@ -100,6 +125,7 @@ class WebhookApiTest {
         assertThat(post("{\"event\":\" \",\"payload\":{}}")
                 .getStatusCode().value()).isEqualTo(400);
         assertThat(deliveries.get()).isZero();
+        assertThat(jdbcClient.sql("SELECT count(*) FROM deliveries").query(Long.class).single()).isZero();
     }
 
     @Test
