@@ -1,8 +1,10 @@
 package dev.bakanov.hookrelay.webhook;
 
 import jakarta.validation.Valid;
+import java.net.URI;
 import java.util.UUID;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,7 +28,10 @@ public class WebhookController {
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
-    public DeliveryResponse deliver(@Valid @RequestBody WebhookRequest request) {
-        return deliveryService.deliver(request);
+    public ResponseEntity<DeliveryResponse> enqueue(@Valid @RequestBody WebhookRequest request) {
+        DeliveryResponse response = deliveryService.enqueue(request);
+        return ResponseEntity.accepted()
+                .location(URI.create("/api/webhooks/" + response.deliveryId()))
+                .body(response);
     }
 }

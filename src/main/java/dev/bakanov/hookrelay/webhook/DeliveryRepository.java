@@ -47,10 +47,24 @@ public class DeliveryRepository {
         return id;
     }
 
+    public Optional<PendingDelivery> lockNext() {
+        return jdbcClient.sql("""
+                SELECT id, target_url, jsonb_build_object('event', event, 'payload', payload)::text AS body
+                FROM deliveries
+                WHERE status = 'PENDING'
+                ORDER BY created_at, id
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """)
+                .query((result, rowNumber) -> new PendingDelivery(result.getObject("id", UUID.class),
+                        result.getString("target_url"), result.getString("body")))
+                .optional();
+    }
+
     public void complete(UUID id, int httpStatus) {
         jdbcClient.sql("""
                 UPDATE deliveries
-                SET status = 'SUCCESS', http_status = :httpStatus, completed_at = CURRENT_TIMESTAMP
+                SET status = 'SUCCESS', http_status = :httpStatus, completed_at = clock_timestamp()
                 WHERE id = :id AND status = 'PENDING'
                 """)
                 .param("id", id)
@@ -62,7 +76,7 @@ public class DeliveryRepository {
         jdbcClient.sql("""
                 UPDATE deliveries
                 SET status = 'FAILED', http_status = :httpStatus, error_message = :errorMessage,
-                    completed_at = CURRENT_TIMESTAMP
+                    completed_at = clock_timestamp()
                 WHERE id = :id AND status = 'PENDING'
                 """)
                 .param("id", id)
