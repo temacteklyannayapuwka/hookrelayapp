@@ -2,5 +2,5 @@ package dev.bakanov.hookrelay.webhook;
 
 import java.util.UUID;
 
-public record DeliveryResponse(UUID deliveryId, boolean delivered, int httpStatus) {
+public record DeliveryResponse(UUID deliveryId, String status) {
 }

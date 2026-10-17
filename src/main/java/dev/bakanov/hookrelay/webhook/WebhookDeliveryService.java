@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.server.ResponseStatusException;
@@ -43,26 +44,35 @@ public class WebhookDeliveryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Delivery not found"));
     }
 
-    public DeliveryResponse deliver(WebhookRequest request) {
+    public DeliveryResponse enqueue(WebhookRequest request) {
         UUID id = repository.create(request, targetUrl);
+        return new DeliveryResponse(id, "PENDING");
+    }
+
+    @Transactional
+    public boolean processNext() {
+        var next = repository.lockNext();
+        if (next.isEmpty()) {
+            return false;
+        }
+        PendingDelivery delivery = next.get();
         int httpStatus;
         try {
             httpStatus = restClient.post()
-                    .uri(targetUrl)
+                    .uri(URI.create(delivery.targetUrl()))
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(request)
+                    .header("X-HookRelay-Delivery-Id", delivery.id().toString())
+                    .body(delivery.body())
                     .exchange((httpRequest, response) -> response.getStatusCode().value());
         } catch (RestClientException exception) {
-            repository.fail(id, null, "Webhook recipient is unavailable");
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                    "Webhook recipient is unavailable", exception);
+            repository.fail(delivery.id(), null, "Webhook recipient is unavailable");
+            return true;
         }
         if (httpStatus < 200 || httpStatus >= 300) {
-            repository.fail(id, httpStatus, "Webhook recipient returned HTTP " + httpStatus);
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                    "Webhook recipient rejected the delivery");
+            repository.fail(delivery.id(), httpStatus, "Webhook recipient returned HTTP " + httpStatus);
+        } else {
+            repository.complete(delivery.id(), httpStatus);
         }
-        repository.complete(id, httpStatus);
-        return new DeliveryResponse(id, true, httpStatus);
+        return true;
     }
 }

@@ -46,8 +46,12 @@ class WebhookApiTest {
     @Autowired
     private JdbcClient jdbcClient;
 
+    @Autowired
+    private WebhookDeliveryService deliveryService;
+
     @DynamicPropertySource
     static void configureTarget(DynamicPropertyRegistry registry) {
+        registry.add("hookrelay.delivery.worker-enabled", () -> "false");
         registry.add("spring.datasource.url", TestDatabase::url);
         registry.add("spring.datasource.username", () -> "postgres");
         registry.add("spring.datasource.password", () -> "");
@@ -78,15 +82,18 @@ class WebhookApiTest {
 
         ResponseEntity<JsonNode> response = post(request);
 
-        assertThat(response.getStatusCode().value()).isEqualTo(200);
-        assertThat(response.getBody().get("delivered").asBoolean()).isTrue();
-        assertThat(response.getBody().get("httpStatus").asInt()).isEqualTo(204);
+        assertThat(response.getStatusCode().value()).isEqualTo(202);
+        assertThat(response.getBody().get("status").asText()).isEqualTo("PENDING");
+        UUID id = UUID.fromString(response.getBody().get("deliveryId").asText());
+        assertThat(response.getHeaders().getLocation()).isEqualTo(URI.create("/api/webhooks/" + id));
+        assertThat(deliveries.get()).isZero();
+        assertThat(deliveryService.findById(id).status()).isEqualTo("PENDING");
+        assertThat(deliveryService.processNext()).isTrue();
         assertThat(deliveries.get()).isEqualTo(1);
         assertThat(receivedMethod.get()).isEqualTo("POST");
         assertThat(receivedContentType.get()).isEqualTo("application/json");
         assertThat(objectMapper.readTree(receivedBody.get()))
                 .isEqualTo(objectMapper.readTree(request));
-        UUID id = UUID.fromString(response.getBody().get("deliveryId").asText());
         var saved = jdbcClient.sql("SELECT *, payload::text AS payload_json FROM deliveries WHERE id = :id")
                 .param("id", id).query().singleRow();
         assertThat(saved.get("event")).isEqualTo("order.created");
@@ -110,14 +117,19 @@ class WebhookApiTest {
         assertThat(Instant.parse(details.getBody().get("completedAt").asText()))
                 .isEqualTo(((java.sql.Timestamp) saved.get("completed_at")).toInstant());
         assertThat(deliveries.get()).isEqualTo(1);
+        assertThat(deliveryService.processNext()).isFalse();
+        assertThat(deliveries.get()).isEqualTo(1);
     }
 
     @Test
-    void returnsBadGatewayWhenRecipientFails() {
+    void recordsFailureAfterAcceptingEvent() {
         responseStatus.set(500);
 
         assertThat(post("{\"event\":\"order.created\",\"payload\":{}}")
-                .getStatusCode().value()).isEqualTo(502);
+                .getStatusCode().value()).isEqualTo(202);
+        assertThat(deliveryService.processNext()).isTrue();
+        assertThat(deliveries.get()).isEqualTo(1);
+        assertThat(deliveryService.processNext()).isFalse();
         assertThat(deliveries.get()).isEqualTo(1);
         var saved = jdbcClient.sql("SELECT * FROM deliveries").query().singleRow();
         assertThat(saved.get("status")).isEqualTo("FAILED");
@@ -176,8 +188,13 @@ class WebhookApiTest {
         responseStatus.set(307);
 
         assertThat(post("{\"event\":\"order.created\",\"payload\":{}}")
-                .getStatusCode().value()).isEqualTo(502);
+                .getStatusCode().value()).isEqualTo(202);
+        assertThat(deliveryService.processNext()).isTrue();
         assertThat(deliveries.get()).isEqualTo(1);
+        assertThat(jdbcClient.sql("SELECT status FROM deliveries").query(String.class).single())
+                .isEqualTo("FAILED");
+        assertThat(jdbcClient.sql("SELECT http_status FROM deliveries").query(Integer.class).single())
+                .isEqualTo(307);
     }
 
     @Test
