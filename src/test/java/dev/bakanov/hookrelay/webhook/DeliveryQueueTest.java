@@ -53,7 +53,8 @@ class DeliveryQueueTest {
             }));
             try {
                 assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
-                assertThat(transaction.execute(status -> repository.lockNext())).isEmpty();
+                var second = transaction.execute(status -> repository.lockNext());
+                assertThat(second).isEmpty();
             } finally {
                 release.countDown();
             }
@@ -68,6 +69,7 @@ class DeliveryQueueTest {
 
     @Test
     void returnsEmptyWhenQueueIsEmpty() {
-        assertThat(transaction.execute(status -> repository.lockNext())).isEmpty();
+        var next = transaction.execute(status -> repository.lockNext());
+        assertThat(next).isEmpty();
     }
 }

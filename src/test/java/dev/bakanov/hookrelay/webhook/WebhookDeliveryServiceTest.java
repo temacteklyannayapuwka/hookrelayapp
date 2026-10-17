@@ -35,7 +35,8 @@ class WebhookDeliveryServiceTest {
         service.enqueue(request);
         TransactionTemplate transaction = new TransactionTemplate(
                 new DataSourceTransactionManager(dataSource));
-        assertThat(transaction.execute(status -> service.processNext())).isTrue();
+        Boolean processed = transaction.execute(status -> service.processNext());
+        assertThat(processed).isTrue();
         var saved = JdbcClient.create(TestDatabase.dataSource())
                 .sql("SELECT * FROM deliveries WHERE event = :event").param("event", event)
                 .query().singleRow();
@@ -43,7 +44,8 @@ class WebhookDeliveryServiceTest {
         assertThat(saved.get("http_status")).isNull();
         assertThat(saved.get("error_message")).isEqualTo("Webhook recipient is unavailable");
         assertThat(saved.get("completed_at")).isNotNull();
-        assertThat(transaction.execute(status -> service.processNext())).isFalse();
+        Boolean processedAgain = transaction.execute(status -> service.processNext());
+        assertThat(processedAgain).isFalse();
     }
 
     @Test
