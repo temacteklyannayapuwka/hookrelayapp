@@ -56,7 +56,8 @@ public class WebhookDeliveryService {
             return false;
         }
         PendingDelivery delivery = next.get();
-        int httpStatus;
+        Integer httpStatus = null;
+        String errorMessage = null;
         try {
             httpStatus = restClient.post()
                     .uri(URI.create(delivery.targetUrl()))
@@ -64,14 +65,19 @@ public class WebhookDeliveryService {
                     .header("X-HookRelay-Delivery-Id", delivery.id().toString())
                     .body(delivery.body())
                     .exchange((httpRequest, response) -> response.getStatusCode().value());
+            if (httpStatus < 200 || httpStatus >= 300) {
+                errorMessage = "Webhook recipient returned HTTP " + httpStatus;
+            }
         } catch (RestClientException exception) {
-            repository.fail(delivery.id(), null, "Webhook recipient is unavailable");
-            return true;
+            errorMessage = "Webhook recipient is unavailable";
         }
-        if (httpStatus < 200 || httpStatus >= 300) {
-            repository.fail(delivery.id(), httpStatus, "Webhook recipient returned HTTP " + httpStatus);
-        } else {
+        int attemptCount = repository.recordAttempt(delivery.id(), httpStatus, errorMessage);
+        if (errorMessage == null) {
             repository.complete(delivery.id(), httpStatus);
+        } else if (DeliveryRetryPolicy.shouldRetry(httpStatus, attemptCount)) {
+            repository.scheduleRetry(delivery.id(), DeliveryRetryPolicy.delayAfter(attemptCount));
+        } else {
+            repository.fail(delivery.id(), httpStatus, errorMessage);
         }
         return true;
     }

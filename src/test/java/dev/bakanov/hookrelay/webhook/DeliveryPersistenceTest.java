@@ -22,11 +22,12 @@ class DeliveryPersistenceTest {
         JdbcClient.create(TestDatabase.dataSource()).sql("DELETE FROM deliveries").update();
         HttpServer recipient = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger sent = new AtomicInteger();
+        AtomicInteger responseStatus = new AtomicInteger(503);
         recipient.createContext("/webhook", exchange -> {
             try (exchange) {
                 exchange.getRequestBody().readAllBytes();
                 sent.incrementAndGet();
-                exchange.sendResponseHeaders(204, -1);
+                exchange.sendResponseHeaders(responseStatus.get(), -1);
             }
         });
         recipient.start();
@@ -36,15 +37,29 @@ class DeliveryPersistenceTest {
                 id = first.getBean(DeliveryRepository.class).create(
                         new WebhookRequest("order.created", new ObjectMapper().createObjectNode()),
                         URI.create("http://127.0.0.1:" + recipient.getAddress().getPort() + "/webhook"));
+                assertThat(first.getBean(WebhookDeliveryService.class).processNext()).isTrue();
+                first.getBean(JdbcClient.class).sql("""
+                        UPDATE deliveries SET next_attempt_at = clock_timestamp() + INTERVAL '1 hour'
+                        WHERE id = :id
+                        """).param("id", id).update();
             }
             try (ConfigurableApplicationContext second = startApplication()) {
                 WebhookDeliveryService service = second.getBean(WebhookDeliveryService.class);
                 assertThat(service.findById(id).status()).isEqualTo("PENDING");
+                assertThat(service.findById(id).attemptCount()).isEqualTo(1);
+                assertThat(service.findById(id).nextAttemptAt()).isNotNull();
+                assertThat(service.processNext()).isFalse();
+                second.getBean(JdbcClient.class).sql("""
+                        UPDATE deliveries SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+                        WHERE id = :id
+                        """).param("id", id).update();
+                responseStatus.set(204);
                 assertThat(service.processNext()).isTrue();
                 assertThat(service.findById(id).status()).isEqualTo("SUCCESS");
+                assertThat(service.findById(id).attemptCount()).isEqualTo(2);
                 assertThat(service.processNext()).isFalse();
             }
-            assertThat(sent.get()).isEqualTo(1);
+            assertThat(sent.get()).isEqualTo(2);
         } finally {
             recipient.stop(0);
         }
