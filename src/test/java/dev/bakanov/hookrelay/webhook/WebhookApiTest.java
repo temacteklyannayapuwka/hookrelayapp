@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -184,6 +185,76 @@ class WebhookApiTest {
     }
 
     @Test
+    void returnsEmptyHistoryForPendingDeliveryWithoutLeakingAnotherDelivery() {
+        UUID completedId = UUID.fromString(post("{\"event\":\"order.created\",\"payload\":{}}")
+                .getBody().get("deliveryId").asText());
+        assertThat(deliveryService.processNext()).isTrue();
+        UUID pendingId = UUID.fromString(post("{\"event\":\"order.cancelled\",\"payload\":{}}")
+                .getBody().get("deliveryId").asText());
+
+        ResponseEntity<JsonNode> pending = client.getForEntity("/api/webhooks/" + pendingId + "/attempts",
+                JsonNode.class);
+        assertThat(pending.getStatusCode().value()).isEqualTo(200);
+        assertThat(pending.getBody().isArray()).isTrue();
+        assertThat(pending.getBody().isEmpty()).isTrue();
+
+        ResponseEntity<JsonNode> completed = client.getForEntity("/api/webhooks/" + completedId + "/attempts",
+                JsonNode.class);
+        assertThat(completed.getStatusCode().value()).isEqualTo(200);
+        assertThat(completed.getBody().size()).isEqualTo(1);
+        assertThat(completed.getBody().get(0).get("attemptNumber").asInt()).isEqualTo(1);
+        assertThat(completed.getBody().get(0).get("httpStatus").asInt()).isEqualTo(204);
+        assertThat(completed.getBody().get(0).get("errorMessage").isNull()).isTrue();
+        assertThat(deliveryService.findById(pendingId).attemptCount()).isZero();
+        assertThat(deliveries.get()).isEqualTo(1);
+    }
+
+    @Test
+    void returnsNotFoundForUnknownDeliveryHistory() {
+        ResponseEntity<JsonNode> response = client.getForEntity(
+                "/api/webhooks/" + UUID.randomUUID() + "/attempts", JsonNode.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        assertThat(deliveries.get()).isZero();
+    }
+
+    @Test
+    void rejectsMalformedIdInHistoryRequest() {
+        ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/not-a-uuid/attempts",
+                JsonNode.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(deliveries.get()).isZero();
+    }
+
+    @Test
+    void returnsNullHttpStatusForConnectionFailure() throws Exception {
+        UUID id = UUID.fromString(post("{\"event\":\"order.created\",\"payload\":{}}")
+                .getBody().get("deliveryId").asText());
+        int closedPort;
+        try (ServerSocket socket = new ServerSocket(0, 0, java.net.InetAddress.getByName("127.0.0.1"))) {
+            closedPort = socket.getLocalPort();
+        }
+        jdbcClient.sql("UPDATE deliveries SET target_url = :url WHERE id = :id")
+                .param("url", "http://127.0.0.1:" + closedPort + "/webhook")
+                .param("id", id).update();
+        assertThat(deliveryService.processNext()).isTrue();
+
+        ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/" + id + "/attempts",
+                JsonNode.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        assertThat(response.getBody().size()).isEqualTo(1);
+        JsonNode attempt = response.getBody().get(0);
+        assertThat(attempt.get("attemptNumber").asInt()).isEqualTo(1);
+        assertThat(attempt.get("httpStatus").isNull()).isTrue();
+        assertThat(attempt.get("errorMessage").asText()).isEqualTo("Webhook recipient is unavailable");
+        assertThat(Instant.parse(attempt.get("finishedAt").asText())).isNotNull();
+        assertThat(deliveryService.findById(id).attemptCount()).isEqualTo(1);
+        assertThat(deliveries.get()).isZero();
+    }
+
+    @Test
     void rejectsMalformedDeliveryId() {
         ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/not-a-uuid", JsonNode.class);
 
@@ -269,6 +340,22 @@ class WebhookApiTest {
         assertThat(jdbcClient.sql("""
                 SELECT http_status FROM delivery_attempts WHERE delivery_id = :id ORDER BY attempt_number
                 """).param("id", id).query(Integer.class).list()).containsExactly(httpStatus, 204);
+
+        ResponseEntity<JsonNode> response = client.getForEntity("/api/webhooks/" + id + "/attempts",
+                JsonNode.class);
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        JsonNode history = response.getBody();
+        assertThat(history.size()).isEqualTo(2);
+        assertThat(history.get(0).get("attemptNumber").asInt()).isEqualTo(1);
+        assertThat(history.get(0).get("httpStatus").asInt()).isEqualTo(httpStatus);
+        assertThat(history.get(0).get("errorMessage").asText())
+                .isEqualTo("Webhook recipient returned HTTP " + httpStatus);
+        assertThat(history.get(1).get("attemptNumber").asInt()).isEqualTo(2);
+        assertThat(history.get(1).get("httpStatus").asInt()).isEqualTo(204);
+        assertThat(history.get(1).get("errorMessage").isNull()).isTrue();
+        assertThat(Instant.parse(history.get(1).get("finishedAt").asText()))
+                .isAfterOrEqualTo(Instant.parse(history.get(0).get("finishedAt").asText()));
+        assertThat(deliveries.get()).isEqualTo(2);
     }
 
     @Test
@@ -300,6 +387,13 @@ class WebhookApiTest {
         assertThat(deliveries.get()).isEqualTo(3);
         assertThat(jdbcClient.sql("SELECT count(*) FROM delivery_attempts WHERE delivery_id = :id")
                 .param("id", id).query(Long.class).single()).isEqualTo(3L);
+        JsonNode history = client.getForObject("/api/webhooks/" + id + "/attempts", JsonNode.class);
+        assertThat(history.size()).isEqualTo(3);
+        for (int index = 0; index < 3; index++) {
+            assertThat(history.get(index).get("attemptNumber").asInt()).isEqualTo(index + 1);
+            assertThat(history.get(index).get("httpStatus").asInt()).isEqualTo(503);
+        }
+        assertThat(deliveries.get()).isEqualTo(3);
     }
 
     private void makeDue(UUID id) {

@@ -3,6 +3,7 @@ package dev.bakanov.hookrelay.webhook;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -47,6 +48,12 @@ public class WebhookDeliveryService {
     public DeliveryResponse enqueue(WebhookRequest request) {
         UUID id = repository.create(request, targetUrl);
         return new DeliveryResponse(id, "PENDING");
+    }
+
+    @Transactional(readOnly = true)
+    public List<DeliveryAttempt> findAttempts(UUID id) {
+        findById(id);
+        return repository.findAttempts(id);
     }
 
     @Transactional

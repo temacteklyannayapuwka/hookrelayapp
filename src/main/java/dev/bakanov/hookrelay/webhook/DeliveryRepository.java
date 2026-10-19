@@ -3,6 +3,7 @@ package dev.bakanov.hookrelay.webhook;
 import java.net.URI;
 import java.sql.Timestamp;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -49,6 +50,19 @@ public class DeliveryRepository {
                 .param("targetUrl", targetUrl.toString())
                 .update();
         return id;
+    }
+
+    public List<DeliveryAttempt> findAttempts(UUID id) {
+        return jdbcClient.sql("""
+                SELECT attempt_number, http_status, error_message, finished_at
+                FROM delivery_attempts WHERE delivery_id = :id
+                ORDER BY attempt_number
+                """)
+                .param("id", id)
+                .query((result, rowNumber) -> new DeliveryAttempt(result.getInt("attempt_number"),
+                        result.getObject("http_status", Integer.class), result.getString("error_message"),
+                        result.getTimestamp("finished_at").toInstant()))
+                .list();
     }
 
     public Optional<PendingDelivery> lockNext() {

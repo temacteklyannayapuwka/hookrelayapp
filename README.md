@@ -13,6 +13,7 @@ Backend-сервис для доставки вебхуков.
 - Сохранение событий, адреса получателя, статуса, HTTP-кода, ошибки и времени доставки в PostgreSQL.
 - Статусы: `PENDING`, `SUCCESS`, `FAILED`. Успешный ответ содержит `deliveryId`.
 - Просмотр сохранённой доставки: `GET /api/webhooks/{deliveryId}`; `404` для неизвестного ID и `400` для некорректного UUID.
+- История попыток: `GET /api/webhooks/{deliveryId}/attempts`, по возрастанию номера попытки.
 - Автоматическое создание схемы через миграции Flyway.
 - До трёх попыток при сетевых ошибках, HTTP `408`, `429` и `5xx`: паузы перед повторами 5 и 10 секунд.
 - Счётчик попыток, время следующей отправки и результаты попыток сохраняются в PostgreSQL. Перенаправления не выполняются.
@@ -95,6 +96,18 @@ curl http://localhost:8080/api/webhooks/e071bdd1-f16b-4226-af51-1a24a98161e6
 Ответ содержит `deliveryId`, `event`, `status`, `httpStatus`, `errorMessage`, `createdAt`, `completedAt`, `attemptCount` и `nextAttemptAt`.
 Время возвращается в UTC в формате ISO 8601. У `PENDING` поля `httpStatus`, `errorMessage` и `completedAt` равны `null`.
 Чтение результата не запускает повторную отправку.
+
+Просмотр истории попыток:
+
+```bash
+curl http://localhost:8080/api/webhooks/e071bdd1-f16b-4226-af51-1a24a98161e6/attempts
+```
+
+Ответ — массив записей с полями `attemptNumber`, `httpStatus`, `errorMessage` и `finishedAt` (UTC, ISO 8601).
+Если у существующей доставки ещё не было попыток, возвращается `200` и `[]`.
+Неизвестный ID возвращает `404`, некорректный UUID — `400`.
+При сетевой ошибке `httpStatus` равен `null`; при успешной попытке `errorMessage` равен `null`.
+Чтение истории не меняет состояние доставки и не отправляет вебхуки.
 
 Получателю отправляется JSON с теми же `event` и `payload`, а также заголовок `X-HookRelay-Delivery-Id`.
 Ответ `2xx` переводит запись в `SUCCESS`.
