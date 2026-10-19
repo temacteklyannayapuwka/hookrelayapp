@@ -12,6 +12,8 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      version: ${{ steps.project.outputs.version }}
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -23,3 +25,60 @@ jobs:
           cache: maven
       - name: Verify
         run: mvn --batch-mode --no-transfer-progress verify
+      - name: Read project version
+        id: project
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import xml.etree.ElementTree as ET
+          print("version=" + ET.parse("pom.xml").getroot().findtext("{http://maven.apache.org/POM/4.0.0}version"))
+          PY
+      - name: Save application JAR
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hookrelay-jar
+          path: target/hookrelayapp-*.jar
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.verify.outputs.version == '1.0.0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: release-v1.0.0
+      cancel-in-progress: false
+    steps:
+      - name: Download verified JAR
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hookrelay-jar
+          path: dist
+      - name: Publish v1.0.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view v1.0.0 >/dev/null 2>&1; then
+            exit 0
+          fi
+          cat > release-notes.md <<'EOF'
+          Первая версия HookRelay — backend-сервиса доставки вебхуков на Java 17 и Spring Boot.
+
+          - Приём событий через API с ответом 202 Accepted.
+          - Фоновая доставка из PostgreSQL и до трёх попыток при временных сбоях.
+          - Просмотр статуса доставки и истории попыток через API.
+          - Миграции Flyway, сохранение прогресса после перезапуска и блокировка одновременной обработки.
+
+          Для запуска JAR требуются Java 17+ и отдельная БД PostgreSQL 14+. Настройки подключения и команды запуска — в README.
+
+          Проверены 27 тестов и сценарий запуска собранного JAR: ошибка 503, повтор с реальной паузой, успех 204 и сохранение истории после перезапуска.
+
+          API предназначен для доверенной локальной среды и не имеет аутентификации. Возможны дубли после аварии: получателю следует учитывать X-HookRelay-Delivery-Id.
+          EOF
+          gh release create v1.0.0 dist/hookrelayapp-1.0.0.jar \
+            --target "$GITHUB_SHA" \
+            --title "HookRelay v1.0.0" \
+            --notes-file release-notes.md

@@ -151,5 +151,11 @@ curl http://localhost:8080/actuator/health
 
 ```bash
 mvn clean package
-java -jar target/hookrelayapp-0.0.1-SNAPSHOT.jar
+java -jar target/hookrelayapp-1.0.0.jar
+```
+
+Полная проверка, включая запуск собранного JAR, повторную доставку и перезапуск приложения:
+
+```bash
+mvn clean verify
 ```
